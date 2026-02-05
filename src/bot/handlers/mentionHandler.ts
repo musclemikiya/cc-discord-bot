@@ -6,7 +6,7 @@ import {
   StringSelectMenuOptionBuilder,
 } from 'discord.js';
 import { isUserAllowed } from '../../auth/accessControl.js';
-import { executeClaudeCommand } from '../../claude/executor.js';
+import { enqueue, getQueueSize, isRunning } from '../../claude/executionQueue.js';
 import { sessionManager } from '../../claude/sessionManager.js';
 import { projectScanner } from '../../claude/projectScanner.js';
 import { processOutput } from '../../claude/outputProcessor.js';
@@ -50,8 +50,10 @@ export async function handleMention(message: Message, client: Client): Promise<v
     return;
   }
 
-  // Send "processing" indicator
-  const processingMessage = await message.reply('処理中...');
+  // Send "processing" indicator with queue status
+  const queueSize = getQueueSize();
+  const queueStatus = isRunning() ? `（キュー待機中: ${queueSize + 1}番目）` : '';
+  const processingMessage = await message.reply(`処理中...${queueStatus}`);
   const workingDir = sessionManager.getWorkingDir(threadId);
 
   try {
@@ -61,8 +63,8 @@ export async function handleMention(message: Message, client: Client): Promise<v
     // Get Claude CLI session ID for resuming (if exists)
     const resumeSessionId = sessionManager.getClaudeSessionId(threadId);
 
-    // Execute Claude command with the selected working directory
-    const result = await executeClaudeCommand({
+    // Execute Claude command through the execution queue
+    const result = await enqueue({
       prompt,
       resumeSessionId,
       workingDir,

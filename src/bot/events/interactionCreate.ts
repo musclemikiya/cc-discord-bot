@@ -8,7 +8,7 @@ import {
 } from 'discord.js';
 import { sessionManager } from '../../claude/sessionManager.js';
 import { projectScanner } from '../../claude/projectScanner.js';
-import { executeClaudeCommand } from '../../claude/executor.js';
+import { enqueue, getQueueSize, isRunning } from '../../claude/executionQueue.js';
 import { processOutput } from '../../claude/outputProcessor.js';
 import { logger } from '../../utils/logger.js';
 
@@ -72,15 +72,17 @@ async function handleProjectSelect(
     return;
   }
 
-  // Update the interaction to show processing
+  // Update the interaction to show processing with queue status
+  const queueSize = getQueueSize();
+  const queueStatus = isRunning() ? `（キュー待機中: ${queueSize + 1}番目）` : '';
   await interaction.update({
-    content: `プロジェクト「${selectedValue}」で処理中...`,
+    content: `プロジェクト「${selectedValue}」で処理中...${queueStatus}`,
     components: [],
   });
 
   try {
-    // Execute Claude command (no resumeSessionId for first execution after project selection)
-    const result = await executeClaudeCommand({
+    // Execute Claude command through the execution queue (no resumeSessionId for first execution)
+    const result = await enqueue({
       prompt: pending.prompt,
       workingDir: projectPath,
     });

@@ -25,7 +25,6 @@ export async function executeClaudeCommand(
 
     const proc = spawn('claude', args, {
       cwd: effectiveWorkingDir,
-      env: { ...process.env },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
