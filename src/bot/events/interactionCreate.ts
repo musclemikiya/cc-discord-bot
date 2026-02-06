@@ -4,6 +4,7 @@ import {
   Interaction,
   StringSelectMenuInteraction,
   TextChannel,
+  ThreadChannel,
   Message,
 } from 'discord.js';
 import { sessionManager } from '../../claude/sessionManager.js';
@@ -11,6 +12,10 @@ import { projectScanner } from '../../claude/projectScanner.js';
 import { enqueue, getQueueSize, isRunning } from '../../claude/executionQueue.js';
 import { processOutput } from '../../claude/outputProcessor.js';
 import { logger } from '../../utils/logger.js';
+
+function isSendableChannel(channel: unknown): channel is TextChannel | ThreadChannel {
+  return channel instanceof TextChannel || channel instanceof ThreadChannel;
+}
 
 export function handleInteractionCreate(client: Client): void {
   client.on(Events.InteractionCreate, async (interaction: Interaction) => {
@@ -90,7 +95,7 @@ async function handleProjectSelect(
     // Get the channel to send the response
     const channel = interaction.channel;
 
-    if (!channel || !(channel instanceof TextChannel)) {
+    if (!channel || !isSendableChannel(channel)) {
       logger.error({ threadId }, 'Failed to get channel for response');
       return;
     }
@@ -155,7 +160,7 @@ async function handleProjectSelect(
     logger.error({ error, userId, threadId }, 'Error processing command after project selection');
 
     const channel = interaction.channel;
-    if (channel && channel instanceof TextChannel) {
+    if (channel && isSendableChannel(channel)) {
       await channel.send('システムエラーが発生しました。しばらくしてから再試行してください。');
     }
   }

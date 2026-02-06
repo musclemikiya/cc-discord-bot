@@ -1,9 +1,12 @@
 import {
   Client,
   Message,
+  MessageCreateOptions,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  TextChannel,
+  ThreadAutoArchiveDuration,
 } from 'discord.js';
 import { isUserAllowed } from '../../auth/accessControl.js';
 import { enqueue, getQueueSize, isRunning } from '../../claude/executionQueue.js';
@@ -26,8 +29,15 @@ export async function handleMention(message: Message, client: Client): Promise<v
 
   // Handle /project command for re-selecting project
   if (prompt.trim() === '/project') {
-    const threadId = getThreadId(message);
-    await showProjectSelector(message, threadId, '');
+    let threadCtx: ThreadContext;
+    try {
+      threadCtx = await getOrCreateThread(message);
+    } catch (error) {
+      logger.error({ error, userId }, 'Failed to create thread for /project');
+      await message.reply('スレッドの作成に失敗しました。ボットにスレッド作成権限があるか確認してください。');
+      return;
+    }
+    await showProjectSelector(message, threadCtx, '');
     return;
   }
 
@@ -36,8 +46,17 @@ export async function handleMention(message: Message, client: Client): Promise<v
     return;
   }
 
-  // Get thread ID for session management
-  const threadId = getThreadId(message);
+  // Create or get thread for session management
+  let threadCtx: ThreadContext;
+  try {
+    threadCtx = await getOrCreateThread(message);
+  } catch (error) {
+    logger.error({ error, userId }, 'Failed to create thread');
+    await message.reply('スレッドの作成に失敗しました。ボットにスレッド作成権限があるか確認してください。');
+    return;
+  }
+
+  const { threadId, sendReply } = threadCtx;
 
   logger.info(
     { userId, threadId, promptLength: prompt.length },
@@ -46,14 +65,14 @@ export async function handleMention(message: Message, client: Client): Promise<v
 
   // Check if project is selected for this thread
   if (!sessionManager.hasWorkingDir(threadId)) {
-    await showProjectSelector(message, threadId, prompt);
+    await showProjectSelector(message, threadCtx, prompt);
     return;
   }
 
   // Send "processing" indicator with queue status
   const queueSize = getQueueSize();
   const queueStatus = isRunning() ? `（キュー待機中: ${queueSize + 1}番目）` : '';
-  const processingMessage = await message.reply(`処理中...${queueStatus}`);
+  const processingMessage = await sendReply(`処理中...${queueStatus}`);
   const workingDir = sessionManager.getWorkingDir(threadId);
 
   try {
@@ -76,7 +95,7 @@ export async function handleMention(message: Message, client: Client): Promise<v
     });
 
     if (!result.success) {
-      await message.reply(`エラーが発生しました: ${result.error ?? '不明なエラー'}`);
+      await sendReply(`エラーが発生しました: ${result.error ?? '不明なエラー'}`);
       return;
     }
 
@@ -89,11 +108,11 @@ export async function handleMention(message: Message, client: Client): Promise<v
     const processed = processOutput(result.output);
 
     if (processed.type === 'message') {
-      await message.reply(processed.content);
+      await sendReply(processed.content);
     } else {
       // Send as file attachment
       const buffer = Buffer.from(processed.content, 'utf-8');
-      await message.reply({
+      await sendReply({
         content: '出力が長いためファイルとして添付しました。',
         files: [
           {
@@ -116,7 +135,7 @@ export async function handleMention(message: Message, client: Client): Promise<v
       // Ignore deletion errors
     });
 
-    await message.reply('システムエラーが発生しました。しばらくしてから再試行してください。');
+    await sendReply('システムエラーが発生しました。しばらくしてから再試行してください。');
   }
 }
 
@@ -126,24 +145,50 @@ function extractPrompt(content: string, botUserId: string): string {
   return content.replace(mentionPattern, '').trim();
 }
 
-function getThreadId(message: Message): string {
-  // If the message is in a thread, use the thread ID
-  // Otherwise, use the channel ID as the "thread" identifier
-  if (message.thread) {
-    return message.thread.id;
+interface ThreadContext {
+  threadId: string;
+  sendReply: (options: string | MessageCreateOptions) => Promise<Message>;
+}
+
+async function getOrCreateThread(message: Message): Promise<ThreadContext> {
+  // スレッド内 → 既存スレッドを継続
+  if (message.channel.isThread()) {
+    return {
+      threadId: message.channel.id,
+      sendReply: (options) => message.reply(options),
+    };
   }
-  return message.channelId;
+
+  // チャンネル → 新規スレッド作成
+  if (!(message.channel instanceof TextChannel)) {
+    throw new Error('スレッドを作成できないチャンネルタイプです。');
+  }
+
+  const now = new Date();
+  const timestamp = now.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const threadName = `Claude | ${message.author.displayName} | ${timestamp}`.slice(0, 100);
+
+  const thread = await message.startThread({
+    name: threadName,
+    autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
+  });
+
+  return {
+    threadId: thread.id,
+    sendReply: (options) => thread.send(options),
+  };
 }
 
 async function showProjectSelector(
   message: Message,
-  threadId: string,
+  threadCtx: ThreadContext,
   prompt: string
 ): Promise<void> {
+  const { threadId, sendReply } = threadCtx;
   const projects = projectScanner.getProjects();
 
   if (projects.length === 0) {
-    await message.reply(
+    await sendReply(
       'エラー: 利用可能なプロジェクトがありません。設定を確認してください。'
     );
     return;
@@ -155,7 +200,7 @@ async function showProjectSelector(
     sessionManager.setPendingPrompt(threadId, {
       prompt,
       messageId: message.id,
-      channelId: message.channelId,
+      channelId: threadId,
       userId: message.author.id,
       createdAt: new Date(),
     });
@@ -178,7 +223,7 @@ async function showProjectSelector(
     selectMenu
   );
 
-  await message.reply({
+  await sendReply({
     content: 'プロジェクトを選択してください：',
     components: [row],
   });
