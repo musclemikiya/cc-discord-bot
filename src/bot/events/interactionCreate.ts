@@ -66,6 +66,14 @@ async function handleProjectSelect(
   sessionManager.resetSession(threadId);
   sessionManager.setWorkingDir(threadId, projectPath);
 
+  // スレッド名をプロジェクト名に変更
+  const channel = interaction.channel;
+  if (channel instanceof ThreadChannel) {
+    await channel.setName(selectedValue).catch((err) => {
+      logger.warn({ error: err, threadId }, 'Failed to rename thread');
+    });
+  }
+
   // Check for pending prompt
   const pending = sessionManager.consumePendingPrompt(threadId);
 
