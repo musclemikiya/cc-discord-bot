@@ -11,7 +11,8 @@ export async function executeClaudeCommand(
   const effectiveWorkingDir = workingDir ?? config.claude.workingDir;
   const effectiveTimeout = timeoutMs ?? config.claude.timeoutMs;
 
-  const args = buildCliArgs(prompt, resumeSessionId);
+  const planMode = options.planMode ?? false;
+  const args = buildCliArgs(prompt, resumeSessionId, planMode);
 
   logger.info(
     { args, workingDir: effectiveWorkingDir, timeout: effectiveTimeout, resumeSessionId },
@@ -87,19 +88,34 @@ export async function executeClaudeCommand(
         return;
       }
 
-      // Parse JSON output to extract session_id and result
-      const parsed = parseJsonOutput(stdout);
+      if (planMode) {
+        const parsed = parseStreamJsonOutput(stdout);
 
-      logger.info(
-        { outputLength: stdout.length, claudeSessionId: parsed.sessionId },
-        'Claude CLI completed successfully'
-      );
+        logger.info(
+          { outputLength: stdout.length, claudeSessionId: parsed.sessionId, fullOutputLength: parsed.fullOutput.length },
+          'Claude CLI completed successfully (planMode)'
+        );
 
-      resolve({
-        success: true,
-        output: parsed.result,
-        claudeSessionId: parsed.sessionId,
-      });
+        resolve({
+          success: true,
+          output: parsed.result,
+          claudeSessionId: parsed.sessionId,
+          fullOutput: parsed.fullOutput,
+        });
+      } else {
+        const parsed = parseJsonOutput(stdout);
+
+        logger.info(
+          { outputLength: stdout.length, claudeSessionId: parsed.sessionId },
+          'Claude CLI completed successfully'
+        );
+
+        resolve({
+          success: true,
+          output: parsed.result,
+          claudeSessionId: parsed.sessionId,
+        });
+      }
     });
 
     proc.on('error', (error) => {
@@ -114,11 +130,12 @@ export async function executeClaudeCommand(
   });
 }
 
-function buildCliArgs(prompt: string, resumeSessionId?: string): string[] {
+function buildCliArgs(prompt: string, resumeSessionId?: string, planMode?: boolean): string[] {
   const args = [
     '--print',
     '--output-format',
-    'json',
+    planMode ? 'stream-json' : 'json',
+    ...(planMode ? ['--verbose'] : []),
     '--dangerously-skip-permissions',
   ];
 
@@ -135,6 +152,47 @@ function buildCliArgs(prompt: string, resumeSessionId?: string): string[] {
 interface ParsedOutput {
   result: string;
   sessionId?: string;
+}
+
+interface ParsedStreamOutput {
+  result: string;
+  sessionId?: string;
+  fullOutput: string;
+}
+
+function parseStreamJsonOutput(stdout: string): ParsedStreamOutput {
+  const texts: string[] = [];
+  let result = '';
+  let sessionId: string | undefined;
+
+  const lines = stdout.split('\n').filter((line) => line.trim());
+
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line);
+
+      if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+        for (const block of event.message.content) {
+          if (block.type === 'text' && block.text) {
+            texts.push(block.text);
+          }
+        }
+      }
+
+      if (event.type === 'result') {
+        sessionId = event.session_id;
+        result = event.result ?? '';
+      }
+    } catch {
+      // Skip lines that aren't valid JSON
+    }
+  }
+
+  return {
+    result,
+    sessionId,
+    fullOutput: texts.join('\n\n---\n\n'),
+  };
 }
 
 function parseJsonOutput(stdout: string): ParsedOutput {

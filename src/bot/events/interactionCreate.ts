@@ -85,6 +85,15 @@ async function handleProjectSelect(
     return;
   }
 
+  // Detect /plan prefix in pending prompt
+  let planMode = false;
+  let effectivePrompt = pending.prompt;
+
+  if (pending.prompt.trim().startsWith('/plan')) {
+    planMode = true;
+    effectivePrompt = pending.prompt.trim().slice('/plan'.length).trim();
+  }
+
   // Update the interaction to show processing with queue status
   const queueSize = getQueueSize();
   const queueStatus = isRunning() ? `（キュー待機中: ${queueSize + 1}番目）` : '';
@@ -96,8 +105,9 @@ async function handleProjectSelect(
   try {
     // Execute Claude command through the execution queue (no resumeSessionId for first execution)
     const result = await enqueue({
-      prompt: pending.prompt,
+      prompt: effectivePrompt,
       workingDir: projectPath,
+      planMode,
     });
 
     // Get the channel to send the response
@@ -160,8 +170,24 @@ async function handleProjectSelect(
       }
     }
 
+    // planMode時: 全文をmdファイルとして添付
+    if (result.fullOutput) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const buf = Buffer.from(result.fullOutput, 'utf-8');
+      const planPayload = {
+        content: '実装計画の詳細:',
+        files: [{ attachment: buf, name: `plan-${timestamp}.md` }],
+      };
+
+      if (originalMessage) {
+        await originalMessage.reply(planPayload);
+      } else {
+        await channel.send(planPayload);
+      }
+    }
+
     logger.info(
-      { userId, threadId, outputType: processed.type, claudeSessionId: result.claudeSessionId },
+      { userId, threadId, outputType: processed.type, planMode, claudeSessionId: result.claudeSessionId },
       'Command completed successfully after project selection'
     );
   } catch (error) {

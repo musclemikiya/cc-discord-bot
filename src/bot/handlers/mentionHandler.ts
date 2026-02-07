@@ -41,7 +41,21 @@ export async function handleMention(message: Message, client: Client): Promise<v
     return;
   }
 
-  if (!prompt.trim()) {
+  // Detect /plan prefix
+  let planMode = false;
+  let effectivePrompt = prompt;
+
+  if (prompt.trim().startsWith('/plan')) {
+    planMode = true;
+    effectivePrompt = prompt.trim().slice('/plan'.length).trim();
+
+    if (!effectivePrompt) {
+      await message.reply('/plan の後にプロンプトを入力してください。例: @Bot /plan 認証機能の計画を立てて');
+      return;
+    }
+  }
+
+  if (!effectivePrompt.trim()) {
     await message.reply('コマンドを入力してください。例: @Bot このコードを確認してください');
     return;
   }
@@ -59,13 +73,13 @@ export async function handleMention(message: Message, client: Client): Promise<v
   const { threadId, sendReply } = threadCtx;
 
   logger.info(
-    { userId, threadId, promptLength: prompt.length },
+    { userId, threadId, promptLength: effectivePrompt.length, planMode },
     'Processing command'
   );
 
   // Check if project is selected for this thread
   if (!sessionManager.hasWorkingDir(threadId)) {
-    await showProjectSelector(message, threadCtx, prompt);
+    await showProjectSelector(message, threadCtx, prompt);  // 元のprompt（/plan付き）を保存
     return;
   }
 
@@ -84,9 +98,10 @@ export async function handleMention(message: Message, client: Client): Promise<v
 
     // Execute Claude command through the execution queue
     const result = await enqueue({
-      prompt,
+      prompt: effectivePrompt,
       resumeSessionId,
       workingDir,
+      planMode,
     });
 
     // Delete processing message
@@ -123,8 +138,18 @@ export async function handleMention(message: Message, client: Client): Promise<v
       });
     }
 
+    // planMode時: 全文をmdファイルとして添付
+    if (result.fullOutput) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const buffer = Buffer.from(result.fullOutput, 'utf-8');
+      await sendReply({
+        content: '実装計画の詳細:',
+        files: [{ attachment: buffer, name: `plan-${timestamp}.md` }],
+      });
+    }
+
     logger.info(
-      { userId, threadId, outputType: processed.type, claudeSessionId: result.claudeSessionId },
+      { userId, threadId, outputType: processed.type, planMode, claudeSessionId: result.claudeSessionId },
       'Command completed successfully'
     );
   } catch (error) {
@@ -140,8 +165,8 @@ export async function handleMention(message: Message, client: Client): Promise<v
 }
 
 function extractPrompt(content: string, botUserId: string): string {
-  // Remove all mentions of the bot
-  const mentionPattern = new RegExp(`<@!?${botUserId}>`, 'g');
+  // ユーザーメンション (<@ID>, <@!ID>) とロールメンション (<@&ID>) を除去
+  const mentionPattern = new RegExp(`<@[!&]?${botUserId}>|<@&\\d+>`, 'g');
   return content.replace(mentionPattern, '').trim();
 }
 

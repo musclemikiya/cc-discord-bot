@@ -3,6 +3,7 @@ export interface ClaudeExecuteOptions {
   resumeSessionId?: string;  // Claude CLI session ID to resume
   workingDir?: string;
   timeoutMs?: number;
+  planMode?: boolean;
 }
 
 export interface ClaudeExecuteResult {
@@ -10,6 +11,7 @@ export interface ClaudeExecuteResult {
   output: string;
   error?: string;
   claudeSessionId?: string;  // Session ID returned by Claude CLI
+  fullOutput?: string;       // planMode時のみ: 全テキスト結合
 }
 
 export interface SessionInfo {
